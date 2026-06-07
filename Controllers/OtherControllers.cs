@@ -13,11 +13,18 @@ namespace SmartBayt.Controllers;
 [Route("api/categories")]
 public class CategoriesController(AppDbContext db) : ControllerBase
 {
-    static CategoryResponse ToDto(Category c) => new(c.Id, c.Name, c.Slug, c.Icon, c.DisplayOrder, c.CreatedAt);
+    static CategoryResponse ToDto(Category c, int count = 0) =>
+        new(c.Id, c.Name, c.Slug, c.Icon, c.DisplayOrder, c.CreatedAt, count);
 
     [HttpGet]
     public async Task<IActionResult> GetAll() =>
-        Ok(await db.Categories.OrderBy(c => c.DisplayOrder).Select(c => ToDto(c)).ToListAsync());
+        Ok(await db.Categories
+            .OrderBy(c => c.DisplayOrder)
+            .Select(c => new CategoryResponse(
+                c.Id, c.Name, c.Slug, c.Icon, c.DisplayOrder, c.CreatedAt,
+                db.Products.Count(p => p.CategoryId == c.Id)
+            ))
+            .ToListAsync());
 
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetById(Guid id)
@@ -97,7 +104,6 @@ public class ReviewsController(AppDbContext db) : ControllerBase
         return Ok(ToDto(r));
     }
 
-    // ─── Approve: يوافق على الـ review ويحدث rating المنتج أوتوماتيك ──────
     [HttpPatch("{id:guid}/approve")]
     [Authorize(Roles = "admin")]
     public async Task<IActionResult> Approve(Guid id)
@@ -108,7 +114,6 @@ public class ReviewsController(AppDbContext db) : ControllerBase
         r.Approved = true;
         await db.SaveChangesAsync();
 
-        // تحديث Rating المنتج بناءً على متوسط الـ reviews المعتمدة
         if (r.ProductId.HasValue)
         {
             var product = await db.Products.FindAsync(r.ProductId.Value);
@@ -443,7 +448,6 @@ public class DashboardController(AppDbContext db) : ControllerBase
         var orders = await db.Orders.CountAsync();
         var customers = await db.Users.CountAsync();
 
-        // ─── Revenue: بس من الأوردرات المكتملة أو المُسلَّمة ──────
         var revenue = await db.Orders
             .Where(o => o.Status == "completed" || o.Status == "delivered")
             .SumAsync(o => (decimal?)o.Total) ?? 0;
@@ -481,7 +485,7 @@ public class DashboardController(AppDbContext db) : ControllerBase
 [Authorize(Roles = "admin")]
 public class UploadController(IWebHostEnvironment env) : ControllerBase
 {
-    private const long MaxFileSize = 5 * 1024 * 1024; // 5MB
+    private const long MaxFileSize = 5 * 1024 * 1024;
 
     [HttpPost]
     public async Task<IActionResult> Upload(IFormFile file)
@@ -489,7 +493,6 @@ public class UploadController(IWebHostEnvironment env) : ControllerBase
         if (file is null || file.Length == 0)
             return BadRequest(new { message = "لم يتم اختيار ملف" });
 
-        // ─── التحقق من الحجم ──────────────────────────────────
         if (file.Length > MaxFileSize)
             return BadRequest(new { message = "الحجم الأقصى للملف هو 5MB" });
 
@@ -497,19 +500,6 @@ public class UploadController(IWebHostEnvironment env) : ControllerBase
         var ext = Path.GetExtension(file.FileName).ToLowerInvariant();
         if (!allowed.Contains(ext))
             return BadRequest(new { message = "نوع الملف غير مسموح" });
-
-        // ─── ملاحظة مهمة ──────────────────────────────────────
-        // الـ upload ده بيحفظ على الـ local disk.
-        // على Railway أو أي PaaS الـ filesystem مش persistent —
-        // الصور هتتمسح عند كل redeploy.
-        // الحل: استخدم Supabase Storage أو Cloudinary.
-        //
-        // مثال Supabase Storage:
-        // var supabase = new SupabaseClient(config["Supabase:Url"], config["Supabase:Key"]);
-        // var bytes = new byte[file.Length];
-        // await file.OpenReadStream().ReadAsync(bytes);
-        // var result = await supabase.Storage.From("uploads").Upload(bytes, $"{Guid.NewGuid()}{ext}");
-        // return Ok(new { url = result });
 
         var uploads = Path.Combine(env.WebRootPath ?? "wwwroot", "uploads");
         Directory.CreateDirectory(uploads);
